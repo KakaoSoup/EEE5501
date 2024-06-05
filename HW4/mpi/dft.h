@@ -81,17 +81,19 @@ void dft2d(T *data, const unsigned width, const unsigned height,
 
     // a. Row-wise one-dimensional DFTs.
     for (unsigned i = 0; i < height; i++) {
-        std::complex<double>* x = new std::complex<double>[width];
-        real_2_complex(&data[i * width], x);
-        dft1d(x, width, weight);
-        std::memcpy(&data[i * width], x, width * sizeof(std::complex<double>));
-        delete[] x;
+	    if(i % num_ranks == static_cast<unsigned>(rank_id)) {
+        	std::complex<double>* x = new std::complex<double>[width];
+       	 	real_2_complex(&data[i * width], x);
+    	    	dft1d(x, width, weight);
+        	std::memcpy(&data[i * width], x, width * sizeof(std::complex<double>));
+        	delete[] x;
+	    }
     }
 
     // MPI_Allgather()-like operations
     std::complex<double>* recv_buffer = new std::complex<double>[width * height];
     for (unsigned i = 0; i < height; i++) {
-        if ((i % static_cast<unsigned>(num_ranks)) == static_cast<unsigned>(rank_id)) {
+        if (i % num_ranks == static_cast<unsigned>(rank_id)) {
             // Send local data to all other processes
             for (int j = 0; j < num_ranks; j++) {
                 if (j != rank_id) {
@@ -107,55 +109,64 @@ void dft2d(T *data, const unsigned width, const unsigned height,
     // Copy received data back to original data array
     std::memcpy(data, recv_buffer, width * height * sizeof(std::complex<double>));
 
+
+    // b. Trasnpose the data matrix for column-wise DFTs
+    
+    // tranposed matrix
+    std::complex<double>* transposed = new std::complex<double>[width * height];
+    // Transpose matrix 'data' to 'transposed'
+    for(unsigned i = 0; i < height; i++) {
+    	for(unsigned j = 0; j < width; j++) {
+		transposed[j * height + i] = data[i * width + j];
+	}
+    }
+
+    // c. Perform row-wise one-dimensional DFTs on the transposed matrix
+    for (unsigned i = 0; i < height; i++) {
+	    if(i % num_ranks == static_cast<unsigned>(rank_id)) {
+        	std::complex<double>* x = new std::complex<double>[height];
+       	 	real_2_complex(&transposed[i * height], x);
+    	    	dft1d(x, width, weight);
+        	std::memcpy(&transposed[i * height], x, height * sizeof(std::complex<double>));
+        	delete[] x;
+	    }
+    }
+
+    // MPI_Allgather()-like operations
+    for (unsigned i = 0; i < height; i++) {
+        if (i % num_ranks == static_cast<unsigned>(rank_id)) {
+            // Send local data to all other processes
+            for (int j = 0; j < num_ranks; j++) {
+                if (j != rank_id) {
+                    MPI_Send(&transposed[i * width], width, MPI_CXX_DOUBLE_COMPLEX, j, 0, MPI_COMM_WORLD);
+                }
+            }
+        } else {
+            // Receive data from other processes
+            MPI_Recv(&recv_buffer[i * width], width, MPI_CXX_DOUBLE_COMPLEX, i % num_ranks, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        }
+    }
+
+    // Copy received data back to original data array
+    std::memcpy(transposed, recv_buffer, width * height * sizeof(std::complex<double>));
+
+
+    // d. Transposed the data matrix back to the original orientation.
+    
+    // Transpose matrix 'transposed' to 'data'
+    for(unsigned i = 0; i < width; i++) {
+    	for(unsigned j = 0; j < height; j++) {
+		data[j * width + i] = data[i * height + j];
+	}
+    }
+
+
+
     // Cleanup
+    delete[] transposed;
     delete[] recv_buffer;
     delete[] weight;
 }
 
-/*
-// Perform 2-D discrete Fourier transform (DFT).
-template <typename T>
-void dft2d(T* data, const unsigned width, const unsigned height, 
-		const int num_ranks, const int rank_id) {
-    std::complex<double>* weight = new std::complex<double>[LEN / 2];
-    pre_calculate_weights(weight, LEN);
-
-    // a. Row-wise one-dimensional DFTs.
-    for (unsigned i = 0; i < height; i++) {
-        std::complex<double>* x = new std::complex<double>[LEN];
-        real_2_complex(&data[i * width], x);
-        dft1d(x, width, weight);
-        std::memcpy(&data[i * width], x, width * sizeof(std::complex<double>));
-        delete[] x;
-    }
-
-    // b. Transpose the data matrix for column-wise DFTs
-    std::complex<double>* transposed = new std::complex<double>[width * height];
-    for (unsigned i = 0; i < height; i++) {
-        for (unsigned j = 0; j < width; j++) {
-            transposed[j * height + i] = data[i * width + j];
-        }
-    }
-
-    // c. Perform row-wise one-dimensional DFTs on the transposed matrix.
-    for (unsigned i = 0; i < width; i++) {
-        std::complex<double>* x = new std::complex<double>[LEN];
-        real_2_complex(&transposed[i * height], x);
-        dft1d(x, height, weight);
-        std::memcpy(&transposed[i * height], x, height * sizeof(std::complex<double>));
-        delete[] x;
-    }
-
-    // d. Transpose the data matrix back to the original orientation.
-    for (unsigned i = 0; i < width; i++) {
-        for (unsigned j = 0; j < height; j++) {
-            data[j * width + i] = transposed[i * height + j];
-        }
-    }
-
-    delete[] transposed;
-    delete[] weight;
-}
-*/
 #endif
 
