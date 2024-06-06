@@ -156,7 +156,7 @@ void dft2d(T *data, const unsigned width, const unsigned height,
     // Transpose matrix 'transposed' to 'data'
     for(unsigned i = 0; i < width; i++) {
     	for(unsigned j = 0; j < height; j++) {
-		data[j * width + i] = data[i * height + j];
+		data[j * width + i] = transposed[i * height + j];
 	}
     }
 
@@ -169,4 +169,3 @@ void dft2d(T *data, const unsigned width, const unsigned height,
 }
 
 #endif
-
