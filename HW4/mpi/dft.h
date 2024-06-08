@@ -5,167 +5,154 @@
 #include <cstdlib>
 #include <cstring>
 #include <mpi.h>
+#include <cmath>
 #include "data.h"
 
-#define LEN 1024
-
-void pre_calculate_weights(std::complex<double>* weight, unsigned N) {
-    double angle;
-    for (unsigned n = 0; n < N / 2; n++) {
-        angle = (2 * n * M_PI) / N;
-        weight[n] = std::complex<double>(cos(angle), -sin(angle));
-    }
-}
-
-void real_2_complex(std::complex<double>* data, std::complex<double>* x) {
-    for (unsigned i = 0; i < LEN; ++i) {
-        x[i] = data[i];
-    }
-}
-
+// Helper function for 1-D DFT using the Cooley-Tukey FFT algorithm with precalculated weights
 template <typename T>
-void real_2_complex(T* data, std::complex<double>* x) {
-    for (unsigned i = 0; i < LEN; ++i) {
-        x[i] = std::complex<double>(static_cast<double>(data[i]), 0.0);
+void dft1d(T* data, int n, T* weights) {
+    if (n <= 1) return;
+
+    // Divide
+    T* even = new T[n / 2];
+    T* odd = new T[n / 2];
+
+    for (int i = 0; i < n / 2; ++i) {
+        even[i] = data[i * 2];
+        odd[i] = data[i * 2 + 1];
     }
-}
 
-void dft1d(std::complex<double>* data, const unsigned width,
-		std::complex<double>* weight) {
-    if (width == 1)
-        return;
+    dft1d(even, n / 2, weights);
+    dft1d(odd, n / 2, weights);
 
-    std::complex<double>* odd = new std::complex<double>[width/2];
-    std::complex<double>* even = new std::complex<double>[width/2];
-
-    for (unsigned k = 0; k < width / 2; k++) {
-        even[k] = data[2*k];
-	odd[k] = data[2*k + 1];
+    // Combine
+    for (int k = 0; k < n / 2; ++k) {
+        T t = weights[k * n / n] * odd[k];
+        data[k] = even[k] + t;
+        data[k + n / 2] = even[k] - t;
     }
-    
-    unsigned i = 0, j = 0, k = 0;
-    while(k < width / 2)
-	    data[k++] = even[i++];
-    while(k < width)
-	    data[k++] = odd[j++];
 
     delete[] even;
     delete[] odd;
-
-    dft1d(data, width/2, weight);
-    dft1d(&data[width/2], width/2, weight);
-
-    std::complex<double>* temp = new std::complex<double>[width];
-
-    for (unsigned k = 0; k < width / 2; k++) {
-	    std::complex<double> w = weight[(k*LEN) / width];
-	    temp[k] = data[k + width/2] * w;
-	    temp[k + width / 2] = -data[k];
-    }
-
-    for(unsigned k = 0; k < width; k++)
-	    data[k] += temp[k];
-
-    delete[] temp;
 }
 
-
-// Perform 2-D discrete Fourier transform (DFT).
+// Function to transpose a square matrix
 template <typename T>
-void dft2d(T *data, const unsigned width, const unsigned height,
-           const int num_ranks, const int rank_id) {
+void transpose(T* data, unsigned width, unsigned height) {
+    for (unsigned i = 0; i < height; ++i) {
+        for (unsigned j = i + 1; j < width; ++j) {
+            std::swap(data[i * width + j], data[j * width + i]);
+        }
+    }
+}
 
-    // Function to pre-calculate weights
-    T* weight = new T[width];
-    pre_calculate_weights(weight, width);
-
-    // a. Row-wise one-dimensional DFTs.
-    for (unsigned i = 0; i < height; i++) {
-	    if(i % num_ranks == static_cast<unsigned>(rank_id)) {
-        	std::complex<double>* x = new std::complex<double>[width];
-       	 	real_2_complex(&data[i * width], x);
-    	    	dft1d(x, width, weight);
-        	std::memcpy(&data[i * width], x, width * sizeof(std::complex<double>));
-        	delete[] x;
-	    }
+// Perform 2-D discrete Fourier transform (DFT)
+template <typename T>
+void dft2d(T* data, const unsigned width, const unsigned height, const int num_ranks, const int rank_id) {
+    // Precalculate weights for the FFT
+    T* weights = new T[width / 2];
+    for (unsigned k = 0; k < width / 2; ++k) {
+        weights[k] = std::polar(1.0, -2 * M_PI * k / width);
     }
 
-    // MPI_Allgather()-like operations
-    std::complex<double>* recv_buffer = new std::complex<double>[width * height];
-    for (unsigned i = 0; i < height; i++) {
-        if (i % num_ranks == static_cast<unsigned>(rank_id)) {
-            // Send local data to all other processes
-            for (int j = 0; j < num_ranks; j++) {
-                if (j != rank_id) {
-                    MPI_Send(&data[i * width], width, MPI_CXX_DOUBLE_COMPLEX, j, 0, MPI_COMM_WORLD);
-                }
-            }
-        } else {
-            // Receive data from other processes
-            MPI_Recv(&recv_buffer[i * width], width, MPI_CXX_DOUBLE_COMPLEX, i % num_ranks, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    // a. Row-wise one-dimensional DFTs
+    for (unsigned i = 0; i < height; ++i) {
+        if ((i % num_ranks) == (unsigned)rank_id) {
+            dft1d(&data[width * i], width, weights);
         }
     }
 
-    // Copy received data back to original data array
-    std::memcpy(data, recv_buffer, width * height * sizeof(std::complex<double>));
+    // Allocate buffer for received data
+    T* recv_buffer = new T[width * height];
+    MPI_Request* requests = new MPI_Request[num_ranks * height];
+    int request_count = 0;
 
-
-    // b. Trasnpose the data matrix for column-wise DFTs
-    
-    // tranposed matrix
-    std::complex<double>* transposed = new std::complex<double>[width * height];
-    // Transpose matrix 'data' to 'transposed'
-    for(unsigned i = 0; i < height; i++) {
-    	for(unsigned j = 0; j < width; j++) {
-		transposed[j * height + i] = data[i * width + j];
-	}
-    }
-
-    // c. Perform row-wise one-dimensional DFTs on the transposed matrix
-    for (unsigned i = 0; i < height; i++) {
-	    if(i % num_ranks == static_cast<unsigned>(rank_id)) {
-        	std::complex<double>* x = new std::complex<double>[height];
-       	 	real_2_complex(&transposed[i * height], x);
-    	    	dft1d(x, width, weight);
-        	std::memcpy(&transposed[i * height], x, height * sizeof(std::complex<double>));
-        	delete[] x;
-	    }
-    }
-
-    // MPI_Allgather()-like operations
-    for (unsigned i = 0; i < height; i++) {
-        if (i % num_ranks == static_cast<unsigned>(rank_id)) {
-            // Send local data to all other processes
-            for (int j = 0; j < num_ranks; j++) {
-                if (j != rank_id) {
-                    MPI_Send(&transposed[i * width], width, MPI_CXX_DOUBLE_COMPLEX, j, 0, MPI_COMM_WORLD);
-                }
+    // Post non-blocking receives
+    for (int i = 0; i < num_ranks; ++i) {
+        if (i != rank_id) {
+            for (unsigned j = i; j < height; j += num_ranks) {
+                MPI_Irecv(&recv_buffer[width * j], width, MPI_DOUBLE_COMPLEX, i, j, MPI_COMM_WORLD, &requests[request_count++]);
             }
-        } else {
-            // Receive data from other processes
-            MPI_Recv(&recv_buffer[i * width], width, MPI_CXX_DOUBLE_COMPLEX, i % num_ranks, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
         }
     }
 
-    // Copy received data back to original data array
-    std::memcpy(transposed, recv_buffer, width * height * sizeof(std::complex<double>));
-
-
-    // d. Transposed the data matrix back to the original orientation.
-    
-    // Transpose matrix 'transposed' to 'data'
-    for(unsigned i = 0; i < width; i++) {
-    	for(unsigned j = 0; j < height; j++) {
-		data[j * width + i] = transposed[i * height + j];
-	}
+    // Send data to all other processes
+    for (int i = 0; i < num_ranks; ++i) {
+        if (i != rank_id) {
+            for (unsigned j = rank_id; j < height; j += num_ranks) {
+                MPI_Send(&data[width * j], width, MPI_DOUBLE_COMPLEX, i, j, MPI_COMM_WORLD);
+            }
+        }
     }
 
+    // Wait for all non-blocking receives to complete
+    MPI_Waitall(request_count, requests, MPI_STATUSES_IGNORE);
 
+    // Copy received data back to original array
+    for (unsigned i = 0; i < height; ++i) {
+        if ((i % num_ranks) != (unsigned)rank_id) {
+            memcpy(&data[width * i], &recv_buffer[width * i], width * sizeof(T));
+        }
+    }
 
-    // Cleanup
+    // b. Transpose the array
+    T* transposed = new T[height * width];
+    for (unsigned i = 0; i < width; ++i) {
+        for (unsigned j = 0; j < height; ++j) {
+            transposed[height * i + j] = data[width * j + i];
+        }
+    }
+
+    // c. Row-wise one-dimensional DFTs on the transposed array
+    for (unsigned i = 0; i < width; ++i) {
+        if ((i % num_ranks) == (unsigned)rank_id) {
+            dft1d(&transposed[height * i], height, weights);
+        }
+    }
+
+    // Reset the request count
+    request_count = 0;
+
+    // Post non-blocking receives for transposed data
+    for (int i = 0; i < num_ranks; ++i) {
+        if (i != rank_id) {
+            for (unsigned j = i; j < width; j += num_ranks) {
+                MPI_Irecv(&recv_buffer[height * j], height, MPI_DOUBLE_COMPLEX, i, j, MPI_COMM_WORLD, &requests[request_count++]);
+            }
+        }
+    }
+
+    // Send transposed data to all other processes
+    for (int i = 0; i < num_ranks; ++i) {
+        if (i != rank_id) {
+            for (unsigned j = rank_id; j < width; j += num_ranks) {
+                MPI_Send(&transposed[height * j], height, MPI_DOUBLE_COMPLEX, i, j, MPI_COMM_WORLD);
+            }
+        }
+    }
+
+    // Wait for all non-blocking receives to complete
+    MPI_Waitall(request_count, requests, MPI_STATUSES_IGNORE);
+
+    // Copy received data back to transposed array
+    for (unsigned i = 0; i < width; ++i) {
+        if ((i % num_ranks) != (unsigned)rank_id) {
+            memcpy(&transposed[height * i], &recv_buffer[height * i], height * sizeof(T));
+        }
+    }
+
+    // d. Transpose the array back to original orientation
+    for (unsigned i = 0; i < width; ++i) {
+        for (unsigned j = 0; j < height; ++j) {
+            data[width * j + i] = transposed[height * i + j];
+        }
+    }
+
     delete[] transposed;
+    delete[] weights;
     delete[] recv_buffer;
-    delete[] weight;
+    delete[] requests;
 }
 
 #endif
+
