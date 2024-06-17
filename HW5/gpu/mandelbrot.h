@@ -15,5 +15,8 @@ extern unsigned mandelbrot[resolution * resolution];
 // Calculate the Mandelbrot convergence map.
 void calc_mandelbrot();
 
+// Calculate the Mandelbrot convergence map.
+void calc_mandelbrot(unsigned);
+
 #endif
 

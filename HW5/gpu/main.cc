@@ -5,6 +5,7 @@
 #endif
 #include <iostream>
 #include "mandelbrot.h"
+#include <time.h>
 
 // Mandelbrot convergence array
 unsigned mandelbrot[resolution * resolution];
@@ -61,6 +62,18 @@ void display(void) {
     glFlush();
 };
 
+void thread_calc_mandelbrot() {
+    for(unsigned i = 1; i <= 1024; i <<= 1) {
+    	clock_t start = clock();
+    	// Calculate the Mandelbrot convergence map.
+    	calc_mandelbrot(i);
+    	clock_t end = clock();
+    	double time = double(end - start) / CLOCKS_PER_SEC;
+    	printf("#thread : %d, execution time : %0.5fsec\n", i, time);
+    }
+}
+
+
 // Keyboard input for the OpenGL window
 void keyboard(unsigned char key, int x, int y) {
     if(key == 'q' || key == 'Q') { glutDestroyWindow(window_id); exit(0); }
@@ -70,8 +83,13 @@ int main(int argc, char **argv) {
     // Initialize the Mandelbrot color palette.
     init_colormap();
 
+    clock_t start = clock();
     // Calculate the Mandelbrot convergence map.
     calc_mandelbrot();
+    clock_t end = clock();
+    double time = double(end - start) / CLOCKS_PER_SEC;
+    printf("gpu execution time : %0.5fsec\n", time);
+
 
     // OpenGL routine
     glutInit(&argc, argv);
